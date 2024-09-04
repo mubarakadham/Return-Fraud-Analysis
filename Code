@@ -1,0 +1,405 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.linear_model import LogisticRegression
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.metrics import (
+    confusion_matrix, accuracy_score, precision_score, recall_score, f1_score, 
+    roc_auc_score, roc_curve, precision_recall_curve
+)
+from sklearn.neural_network import MLPClassifier
+from imblearn.over_sampling import SMOTE
+import statsmodels.api as sm
+import streamlit as st
+from datetime import datetime
+import time
+
+# Load the dataset
+st.title("E-commerce Fraud Detection")
+st.write("Loading and preprocessing data...")
+
+# Load the data
+data = pd.read_csv('C:/Users/MUBARAK ADHAM/Desktop/Desertation/zaan_sales_and_return_data.csv')
+
+# Initial Data Exploration
+st.header("Initial Data Exploration")
+st.write("Here's a sample of the data:")
+st.dataframe(data.head())
+
+# Handle missing values
+st.subheader("Data Preprocessing: Handling Missing Values")
+missing_data = data.isnull().sum()
+st.write("Missing data per column:")
+st.write(missing_data)
+data = data.dropna()  # Dropping missing values for simplicity
+st.write("Data after removing missing values:")
+st.dataframe(data.head())
+
+# Feature Engineering: Adding a Category Column
+st.subheader("Feature Engineering: Adding Category Column")
+
+categories = data['CATEGORY'].unique()
+
+st.write("Data after adding CATEGORY column:")
+columns_to_display = ['CATEGORY', 'PRICE', 'RETURN', 'QUANTITY_SOLD']
+st.dataframe(data[columns_to_display].head())
+
+# Outlier Detection and Removal (if necessary)
+st.subheader("Outlier Detection and Handling")
+if 'PRICE' in data.columns:
+    columns_for_outliers = ['PRICE', 'QUANTITY_SOLD']
+    from scipy import stats
+    z_scores = np.abs(stats.zscore(data[columns_for_outliers]))
+    outliers = np.where(z_scores > 3)
+    st.write(f"Detected {len(outliers[0])} outliers in the data.")
+    data_clean = data[(z_scores < 3).all(axis=1)]
+    st.write("Data after outlier removal:")
+    st.dataframe(data_clean.head())
+else:
+    st.write("Price or Quantity Sold columns not found, skipping outlier detection.")
+    data_clean = data  # If no outlier detection, use the original data
+
+# Sidebar for user input
+st.sidebar.title("Data Analysis Options")
+visualization_type = st.sidebar.selectbox("Select Visualization Type:", 
+                                          ["Distribution of Prices", 
+                                           "Distribution of Quantity Sold", 
+                                           "Count of Returns by Category", 
+                                           "Correlation Matrix"])
+
+# Data Visualizations
+st.header("Data Visualizations")
+
+if visualization_type == "Distribution of Prices" and 'PRICE' in data_clean.columns:
+    st.subheader("Distribution of Prices")
+    plt.figure(figsize=(10, 6))
+    sns.histplot(data_clean['PRICE'], bins=50, kde=True)
+    plt.title('Distribution of Prices')
+    plt.xlabel('Price')
+    plt.ylabel('Frequency')
+    st.pyplot(plt)
+
+elif visualization_type == "Distribution of Quantity Sold" and 'QUANTITY_SOLD' in data_clean.columns:
+    st.subheader("Distribution of Quantity Sold")
+    plt.figure(figsize=(10, 6))
+    sns.histplot(data_clean['QUANTITY_SOLD'], bins=20, kde=True)
+    plt.title('Distribution of Quantity Sold')
+    plt.xlabel('Quantity Sold')
+    plt.ylabel('Frequency')
+    st.pyplot(plt)
+
+elif visualization_type == "Count of Returns by Category":
+    st.subheader("Count of Returns by Category")
+    plt.figure(figsize=(12, 8))
+    if 'CATEGORY' in data_clean.columns and 'RETURN' in data_clean.columns:
+        sns.countplot(data=data_clean, x='CATEGORY', hue='RETURN')
+        plt.title('Count of Returns by Category')
+        plt.xlabel('Category')
+        plt.ylabel('Count')
+        plt.xticks(rotation=45)
+        st.pyplot(plt)
+    else:
+        st.error("CATEGORY or RETURN column not found in data.")
+
+elif visualization_type == "Correlation Matrix":
+    st.subheader("Correlation Matrix")
+    plt.figure(figsize=(12, 8))
+    numeric_cols = data_clean.select_dtypes(include=[np.number])
+    correlation_matrix = numeric_cols.corr()
+    sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', linewidths=0.5)
+    plt.title('Correlation Matrix of Features')
+    st.pyplot(plt)
+
+# Model Training and Evaluation
+st.header("Model Training and Evaluation")
+
+# Sample the data for quicker processing
+data_sample = data_clean.sample(frac=0.1, random_state=42)
+
+# Initialize a list with necessary columns
+columns_to_use = ['PRICE', 'QUANTITY_SOLD']
+
+# Add SEX as a feature if it exists
+if 'SEX' in data_sample.columns:
+    data_sample = pd.get_dummies(data_sample, columns=['SEX'], drop_first=True)
+    columns_to_use.append('SEX_Male')
+
+# Add payment mode as a feature if it exists
+if 'PAYEMENT_MODE' in data_sample.columns:
+    data_sample = pd.get_dummies(data_sample, columns=['PAYEMENT_MODE'], drop_first=True)
+    columns_to_use += [col for col in data_sample.columns if 'PAYEMENT_MODE_' in col]
+
+# Use CATEGORY as a feature if it exists
+if 'CATEGORY' in data_sample.columns:
+    data_sample = pd.get_dummies(data_sample, columns=['CATEGORY'], drop_first=True)
+    columns_to_use += [col for col in data_sample.columns if 'CATEGORY_' in col]
+
+X = data_sample[columns_to_use]
+y = data_sample['RETURN']
+
+# Convert to numeric
+X = X.apply(pd.to_numeric)
+y = y.apply(pd.to_numeric)
+X = X.astype(float)
+
+# Add constant to features for logistic regression
+X_const = sm.add_constant(X)
+
+# Split the data
+X_train, X_test, y_train, y_test = train_test_split(X_const, y, test_size=0.3, random_state=42)
+
+# Apply SMOTE to the training data to handle class imbalance
+smote = SMOTE(random_state=42)
+X_train_res, y_train_res = smote.fit_resample(X_train, y_train)
+
+# Start timing the model training process
+start_time = time.time()
+
+# Logistic Regression with statsmodels
+logit_model = sm.Logit(y_train_res, X_train_res)
+logit_result = logit_model.fit()
+
+# Record time after Logistic Regression
+end_time = time.time()
+st.write(f"Logistic Regression Training Time: {end_time - start_time:.2f} seconds")
+
+# Logistic Regression with scikit-learn
+start_time = time.time()
+logistic_model = LogisticRegression(max_iter=100)
+logistic_model.fit(X_train_res, y_train_res)
+y_pred_logistic = logistic_model.predict(X_test)
+
+end_time = time.time()
+st.write(f"Logistic Regression (scikit-learn) Training Time: {end_time - start_time:.2f} seconds")
+
+# Decision Tree with GridSearchCV for hyperparameter tuning
+param_grid = {'max_depth': [3, 5, 7],
+              'min_samples_split': [2, 5],
+              'min_samples_leaf': [1, 2]}
+grid_search_tree = GridSearchCV(DecisionTreeClassifier(), param_grid, cv=3, n_jobs=-1)
+
+start_time = time.time()
+grid_search_tree.fit(X_train_res, y_train_res)
+best_tree_model = grid_search_tree.best_estimator_
+y_pred_tree = best_tree_model.predict(X_test)
+
+end_time = time.time()
+st.write(f"Decision Tree Training Time: {end_time - start_time:.2f} seconds")
+
+# Simplified Neural Network (MLPClassifier)
+param_grid_mlp = {
+    'hidden_layer_sizes': [(50,), (100,)],
+    'activation': ['relu'],
+    'solver': ['adam'],
+    'alpha': [0.0001],
+    'learning_rate': ['constant'],
+    'max_iter': [100]  # Lowered iteration count for quicker testing
+}
+
+grid_search_mlp = GridSearchCV(MLPClassifier(random_state=42), param_grid_mlp, cv=3, n_jobs=-1)
+
+start_time = time.time()
+grid_search_mlp.fit(X_train_res, y_train_res)
+best_mlp_model = grid_search_mlp.best_estimator_
+y_pred_mlp = best_mlp_model.predict(X_test)
+
+end_time = time.time()
+st.write(f"Neural Network Training Time: {end_time - start_time:.2f} seconds")
+
+
+# Evaluate Logistic Regression
+st.subheader("Logistic Regression Performance")
+conf_matrix_logistic = confusion_matrix(y_test, y_pred_logistic)
+accuracy_logistic = accuracy_score(y_test, y_pred_logistic)
+precision_logistic = precision_score(y_test, y_pred_logistic)
+recall_logistic = recall_score(y_test, y_pred_logistic)
+f1_logistic = f1_score(y_test, y_pred_logistic)
+roc_auc_logistic = roc_auc_score(y_test, y_pred_logistic)
+
+st.text(f"Confusion Matrix:\n{conf_matrix_logistic}")
+st.text(f"Accuracy: {accuracy_logistic}")
+st.text(f"Precision: {precision_logistic}")
+st.text(f"Recall: {recall_logistic}")
+st.text(f"F1 Score: {f1_logistic}")
+st.text(f"ROC-AUC Score: {roc_auc_logistic}")
+
+# Evaluate Decision Tree
+st.subheader("Decision Tree Performance")
+conf_matrix_tree = confusion_matrix(y_test, y_pred_tree)
+accuracy_tree = accuracy_score(y_test, y_pred_tree)
+precision_tree = precision_score(y_test, y_pred_tree)
+recall_tree = recall_score(y_test, y_pred_tree)
+f1_tree = f1_score(y_test, y_pred_tree)
+roc_auc_tree = roc_auc_score(y_test, y_pred_tree)
+
+st.text(f"Confusion Matrix:\n{conf_matrix_tree}")
+st.text(f"Accuracy: {accuracy_tree}")
+st.text(f"Precision: {precision_tree}")
+st.text(f"Recall: {recall_tree}")
+st.text(f"F1 Score: {f1_tree}")
+st.text(f"ROC-AUC Score: {roc_auc_tree}")
+
+# Evaluate Neural Network
+st.subheader("Neural Network Performance")
+conf_matrix_mlp = confusion_matrix(y_test, y_pred_mlp)
+accuracy_mlp = accuracy_score(y_test, y_pred_mlp)
+precision_mlp = precision_score(y_test, y_pred_mlp)
+recall_mlp = recall_score(y_test, y_pred_mlp)
+f1_mlp = f1_score(y_test, y_pred_mlp)
+roc_auc_mlp = roc_auc_score(y_test, y_pred_mlp)
+
+st.text(f"Confusion Matrix:\n{conf_matrix_mlp}")
+st.text(f"Accuracy: {accuracy_mlp}")
+st.text(f"Precision: {precision_mlp}")
+st.text(f"Recall: {recall_mlp}")
+st.text(f"F1 Score: {f1_mlp}")
+st.text(f"ROC-AUC Score: {roc_auc_mlp}")
+
+# Plot ROC Curves
+st.subheader("ROC Curves")
+plt.figure(figsize=(10, 6))
+
+fpr_logistic, tpr_logistic, _ = roc_curve(y_test, y_pred_logistic)
+fpr_tree, tpr_tree, _ = roc_curve(y_test, y_pred_tree)
+fpr_mlp, tpr_mlp, _ = roc_curve(y_test, y_pred_mlp)
+
+plt.plot(fpr_logistic, tpr_logistic, label=f'Logistic Regression (AUC = {roc_auc_logistic:.2f})')
+plt.plot(fpr_tree, tpr_tree, label=f'Decision Tree (AUC = {roc_auc_tree:.2f})')
+plt.plot(fpr_mlp, tpr_mlp, label=f'Neural Network (AUC = {roc_auc_mlp:.2f})')
+plt.plot([0, 1], [0, 1], 'k--', label='Random Classifier')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.05])
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('Receiver Operating Characteristic (ROC) Curves')
+plt.legend(loc="lower right")
+st.pyplot(plt)
+
+# Plot Precision-Recall Curves
+st.subheader("Precision-Recall Curves")
+plt.figure(figsize=(10, 6))
+
+precision_logistic, recall_logistic, _ = precision_recall_curve(y_test, y_pred_logistic)
+precision_tree, recall_tree, _ = precision_recall_curve(y_test, y_pred_tree)
+precision_mlp, recall_mlp, _ = precision_recall_curve(y_test, y_pred_mlp)
+
+plt.plot(recall_logistic, precision_logistic, label=f'Logistic Regression (F1 = {f1_logistic:.2f})')
+plt.plot(recall_tree, precision_tree, label=f'Decision Tree (F1 = {f1_tree:.2f})')
+plt.plot(recall_mlp, precision_mlp, label=f'Neural Network (F1 = {f1_mlp:.2f})')
+plt.xlabel('Recall')
+plt.ylabel('Precision')
+plt.title('Precision-Recall Curves')
+plt.legend(loc="lower left")
+st.pyplot(plt)
+
+# Fraud Risk Analysis
+st.header("Fraud Analysis")
+st.subheader("Determine the Fraud Risk Level")
+
+best_model_accuracy = max(accuracy_mlp, accuracy_logistic, accuracy_tree)
+
+risk_levels = {"Low": 0.3, "Medium": 0.6, "High": 0.9}
+
+if best_model_accuracy <= risk_levels["Low"]:
+    risk_category = "Low"
+elif best_model_accuracy <= risk_levels["Medium"]:
+    risk_category = "Medium"
+else:
+    risk_category = "High"
+
+st.write("Fraud analysis")
+progress_bar = st.progress(0)
+if risk_category == "Low":
+    progress_bar.progress(33)
+    st.text("Low Risk")
+elif risk_category == "Medium":
+    progress_bar.progress(66)
+    st.text("Medium Risk")
+else:
+    progress_bar.progress(100)
+    st.text("High Risk")
+
+# Return Request Analysis (Enhanced)
+st.header("Return Request Analysis")
+st.write("Customer Return Analysis")
+
+# Add a section to display the number of returns per customer
+customer_returns = data.groupby('CUST_ID')['RETURN'].sum().reset_index()
+customer_returns = customer_returns.rename(columns={'RETURN': 'Total Returns'})
+
+# Merging customer names if available
+if 'NAME' in data.columns:
+    customer_info = data[['CUST_ID', 'NAME']].drop_duplicates()
+    customer_returns = customer_returns.merge(customer_info, on='CUST_ID', how='left')
+
+st.subheader("Number of Returns by Customer")
+st.dataframe(customer_returns)
+
+st.write("Use the form below to analyze a specific return request.")
+
+# Form to take return request details
+st.subheader("Return Request Form")
+customer_id = st.text_input("Customer ID")
+product_id = st.text_input("Product ID")
+reason = st.text_area("Reason for Return")
+
+if st.button("Submit Return Request"):
+    try:
+        # Check if the customer is a repeat customer
+        repeat_customer = data[data['CUST_ID'] == customer_id].shape[0] > 1
+        
+        # Check if the product is high value
+        product_info = data[data['PRODUCT_ID'] == product_id]
+        if product_info.empty:
+            st.error("Product ID not found in the dataset.")
+        else:
+            high_value_product = product_info['PRICE'].mean() > 100  # Assume high value if price > 100
+            
+            # Calculate the customer's return rate
+            customer_returns = data[data['CUST_ID'] == customer_id]['RETURN'].sum()
+            total_purchases = data[data['CUST_ID'] == customer_id].shape[0]
+            return_rate = customer_returns / total_purchases if total_purchases > 0 else 0
+            
+            # Determine risk category
+            if high_value_product and return_rate > 0.2:
+                risk = "High"
+            elif high_value_product or return_rate > 0.2:
+                risk = "Medium"
+            else:
+                risk = "Low"
+            
+            # Analyze return request
+            if repeat_customer and high_value_product:
+                st.success("Shows Comments to Customer: Returned Product will undergo Quality Check. Refund will be approved after passing Quality Check.")
+                if high_value_product:
+                    st.info("Shows Message to Retailer: Returned Product - High value. Do quality check then issue refund.")
+                if product_info['CATEGORY'].iloc[0] == 'Mobile':
+                    st.info("Please check the mobile for working condition and any signs of usage.")
+                elif product_info['CATEGORY'].iloc[0] == 'Clothing':
+                    st.info("Please check the clothing for original packing and any wear and tear or stains.")
+            elif repeat_customer and not high_value_product:
+                if return_rate > 0.2:  # Assume high return rate if > 20%
+                    st.success("Shows Comments to Customer: Returned Product will undergo Quality Check. Refund will be approved after passing Quality Check.")
+                    st.info("High return rate detected. This return is considered Medium Risk.")
+                else:
+                    st.success("Issue refund instantly after return courier is picked up.")
+                    st.info("Low return rate detected. This return is considered Low Risk.")
+            elif not repeat_customer and high_value_product:
+                st.success("Shows Comments to Customer: Returned Product will undergo Quality Check. Refund will be approved after passing Quality Check.")
+                if high_value_product:
+                    st.info("High value product detected. This return is considered High Risk.")
+                if product_info['CATEGORY'].iloc[0] == 'Mobile':
+                    st.info("Please check the mobile for working condition and any signs of usage.")
+                elif product_info['CATEGORY'].iloc[0] == 'Clothing':
+                    st.info("Please check the clothing for original packing and any wear and tear or stains.")
+            else:
+                st.success("Issue refund instantly after return courier is picked up.")
+                st.info("Low value product detected. This return is considered Low Risk.")
+    except Exception as e:
+        st.error(f"An error occurred: {e}")
+
+# Display the final application message
+st.write("Thank you for using the E-commerce Fraud Detection and Return Analysis tool.")
+
